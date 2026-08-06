@@ -17,10 +17,10 @@ This document describes the intended architecture of the backend, how the domain
 
 The codebase follows a layered structure:
 
-- Domain: core entities, enums, and business rules
+- Domain: pure business objects, enums, and rules
 - Application: use cases and orchestration
 - API: REST controllers, request/response DTOs, and exception translation
-- Infrastructure: persistence, external integrations, and scheduled jobs
+- Infrastructure: persistence, external integrations, mappers, and scheduled jobs
 
 The current source tree already reflects this split, even though only the domain layer is populated today.
 
@@ -44,26 +44,49 @@ The domain layer centers on a few core concepts:
 - A task has many comments.
 - A reminder belongs to one task.
 
-### Current entity approach
+### Production-grade boundary
 
-- `Employee` uses single-table inheritance with a discriminator column.
-- Roles are modeled with the `Role` enum.
-- Task, sprint, reminder, and comment timestamps are stored in the entity layer to support auditing and timeline views.
-- Collections are lazy by default to avoid loading more data than the current use case needs.
+- The domain model should not depend on JPA annotations.
+- Persistence-specific objects should live in the infrastructure layer.
+- Mappers should translate between domain objects and database-backed data objects.
+- This keeps the business model stable if the persistence strategy changes later.
+
+### Recommended object split
+
+- Domain objects: business-focused classes with rules and relationships
+- Persistence data objects: JPA-backed classes mapped to PostgreSQL tables
+- DTOs: request and response shapes used by the API layer
+
+The current code uses JPA annotations directly on the domain classes, which is fine for a prototype, but the longer-term target should be this separation.
+
+### Employee capability contract
+
+The `EmployeeFunctionality` interface should be treated as the role capability contract for the domain.
+
+That means:
+
+- it declares the operations every employee type must support
+- concrete employee classes such as manager, developer, and team lead implement or inherit those behaviors
+- application services can ask an employee what they are allowed to do without hardcoding role checks everywhere
+
+This is a good fit for the current model because each employee subtype can express its own rules for task creation, assignment, status movement, sprint closure, and commenting.
+
+If the domain later moves away from JPA annotations, the interface should stay in the domain layer and remain independent from persistence details.
 
 ## Persistence and Database Integration
 
-The backend currently uses Spring Data JPA with an H2 in-memory database for local development and fast iteration.
+The backend should use PostgreSQL as the production database, with Spring Data JPA or another persistence adapter confined to the infrastructure layer.
 
-Current persistence configuration:
+For local development, H2 can remain a convenience database, but it should not define the architecture.
 
-- `spring.jpa.hibernate.ddl-auto=update` to evolve the schema during development
-- `spring.h2.console.enabled=true` for quick inspection while building the app
-- `spring.jpa.show-sql=true` to make ORM behavior visible during development
+Recommended persistence split:
 
-### Recommended database direction
+- PostgreSQL for persistent storage
+- Infrastructure-layer data objects for table mapping
+- Repositories that work with data objects rather than domain classes directly
+- Mappers in the infrastructure layer to move data between persistence and domain models
 
-For local development, H2 is fine. For anything beyond the prototype stage, the application should move to a production-grade relational database such as PostgreSQL.
+If you keep JPA in the project, the annotations should sit on the persistence data objects, not the domain model.
 
 That transition matters because this domain depends on:
 
@@ -73,7 +96,7 @@ That transition matters because this domain depends on:
 
 ### Tables and mapping considerations
 
-The current entities suggest the following persistence pattern:
+The persistence model should likely map to the following tables:
 
 - one table for `team`
 - one table for `employee` using single-table inheritance
@@ -89,6 +112,7 @@ Key schema concerns to document early:
 - indexes on task status, assignee, team, sprint, and due date
 - enum storage as strings rather than ordinals
 - cascade behavior only where child records are truly owned by the parent
+- audit columns such as `created_at` and `updated_at` where useful
 
 ## Application Flow
 
@@ -96,8 +120,8 @@ The intended request flow is:
 
 1. API layer receives a request and validates input.
 2. Application layer executes the use case and enforces business rules.
-3. Domain entities carry state and relationships.
-4. Infrastructure layer persists changes or triggers integration side effects.
+3. Domain objects carry state and relationships.
+4. Infrastructure layer maps to persistence data objects and persists changes or triggers integration side effects.
 
 This separation keeps controllers thin and makes the business workflow easier to test.
 
@@ -143,13 +167,14 @@ These are the topics that are most important to document and settle early:
 
 The next practical backend steps are:
 
-- define repositories for the core entities
+- define repositories for the persistence data objects
+- add domain objects and mappers if the current model stays JPA-free in the long term
 - add DTOs for task, sprint, team, comment, and reminder operations
 - implement application use cases for the main workflows
 - expose REST controllers under the API layer
 - add exception handling and validation responses
-- replace H2 with a production database profile when deployment work begins
+- configure PostgreSQL alongside a local H2 profile for development
 
 ## Summary
 
-The architecture is intentionally simple: model the collaboration domain in JPA entities, keep business orchestration in the application layer, expose the workflow through REST, and isolate persistence and integrations in infrastructure. That gives TeamFlow Lite a clean path from prototype to a maintainable collaboration backend.
+The architecture should be intentionally simple but more production-ready: keep the domain model free of persistence concerns, use PostgreSQL as the real database, place JPA data objects and repositories in infrastructure, and translate through mappers so the business model stays stable as the storage layer evolves.
